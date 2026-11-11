@@ -1,0 +1,44 @@
+{
+  "name": "portfolio-ai-assistant",
+  "version": "0.1.0",
+  "description": "A grounded, citation-light RAG chat assistant for a personal portfolio site. Hybrid BM25 + embedding retrieval, strict guardrails, free-tier LLM failover, and a markdown knowledge base you can fork.",
+  "author": "Hemanga Kashyap",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "predev": "tsx scripts/ensure-index.ts",
+    "prebuild": "tsx scripts/ensure-index.ts",
+    "pretypecheck": "tsx scripts/ensure-index.ts",
+    "typecheck": "tsc --noEmit",
+    "kb:lint": "tsx scripts/kb-lint.ts",
+    "kb:status": "tsx scripts/kb-status.ts",
+    "kb:index": "tsx scripts/kb-build-index.ts",
+    "kb:index:offline": "tsx scripts/kb-build-index.ts --no-embeddings",
+    "kb:timeline": "tsx scripts/kb-timeline.ts",
+    "kb:sync": "tsx scripts/kb-sync-github.ts",
+    "kb:unanswered": "tsx scripts/kb-unanswered.ts",
+    "ask": "tsx scripts/ask.ts",
+    "llm:check": "tsx scripts/llm-check.ts",
+    "abuse:test": "tsx scripts/abuse-test.ts",
+    "test": "tsx --test \"src/lib/assistant/__tests__/*.test.ts\" \"scripts/__tests__/*.test.ts\" \"src/components/assistant/__tests__/*.test.tsx\""
+  },
+  "dependencies": {
+    "next": "16.1.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

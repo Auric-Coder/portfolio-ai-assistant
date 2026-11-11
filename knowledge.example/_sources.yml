@@ -1,0 +1,9 @@
+# Which GitHub repositories `npm run kb:sync` summarises into knowledge.example/_auto/repos/*.md.
+# Everything generated there is `draft` (not indexed) unless the repo is listed under `publish:`.
+# A hand-written public project file that links to the repo always takes priority.
+# The sample owner below is fictional, so the list is empty; put your own GitHub username and repos here.
+owner: example-user
+topic: portfolio-kb # any repo of the owner with this GitHub topic is added automatically
+repos: []
+exclude: []
+publish: []
