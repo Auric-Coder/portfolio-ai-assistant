@@ -18,6 +18,8 @@ export interface ProviderEnv {
   geminiKey?: string;
   geminiModel: string;
   timeoutMs: number;
+  /** Overrides `timeoutMs` for NVIDIA only (the primary: fail over fast). */
+  nvidiaTimeoutMs?: number;
 }
 
 /** Order = priority. Providers without a key are left out. */
@@ -25,7 +27,7 @@ export function buildProviderChain(e: ProviderEnv, fetchImpl?: typeof fetch): LL
   const chain: LLMProvider[] = [];
   if (e.nvidiaKey)
     chain.push(
-      new NvidiaProvider({ apiKey: e.nvidiaKey, model: e.nvidiaModel, baseUrl: e.nvidiaBaseUrl, timeoutMs: e.timeoutMs, fetchImpl }),
+      new NvidiaProvider({ apiKey: e.nvidiaKey, model: e.nvidiaModel, baseUrl: e.nvidiaBaseUrl, timeoutMs: e.nvidiaTimeoutMs ?? e.timeoutMs, fetchImpl }),
     );
   if (e.geminiKey) chain.push(new GeminiProvider({ apiKey: e.geminiKey, model: e.geminiModel, timeoutMs: e.timeoutMs, fetchImpl }));
   return chain;

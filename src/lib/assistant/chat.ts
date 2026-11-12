@@ -10,6 +10,7 @@ import { streamWithFailover, type LLMProvider } from "./llm";
 import type { ChatTurn } from "./llm/types";
 import { buildMessages, buildReminder, buildSystemPrompt } from "./prompt";
 import { resolvePronouns } from "./pronouns";
+import type { Timings } from "./timing";
 import { prepareContext } from "./runtime";
 import type { AssistantIndex, SourceChunk } from "./types";
 
@@ -29,6 +30,8 @@ export interface ChatDeps {
   onResult?: (r: { refused: boolean; reason?: RefusalReason; topCosine: number | null; topBm25: number; mode?: string }) => void;
   /** Called once when the request finishes (also if the client disconnects), for the anonymised log. */
   onComplete?: (r: CompleteInfo) => void;
+  /** Filled in by runChat (index, embed, retrieve, ttft, total, provider, failover). Shared with the HTTP layer. */
+  timings?: Timings;
 }
 
 export interface CompleteInfo {
@@ -42,6 +45,7 @@ export interface CompleteInfo {
   provider?: string;
   ms: number;
   error: boolean;
+  timings: Timings;
 }
 
 /**
@@ -84,12 +88,26 @@ export function toSources(hits: { chunk: { title: string; links: Record<string, 
 export async function* runChat(history: ChatTurn[], question: string, deps: ChatDeps): AsyncGenerator<ChatEvent> {
   const pronouns = resolvePronouns(config.site.pronouns);
   const t0 = Date.now();
-  let info: Omit<CompleteInfo, "answer" | "provider" | "ms" | "error" | "question"> = { refused: false, topCosine: null, topBm25: 0 };
+  const p0 = performance.now();
+  const timings: Timings = deps.timings ?? {};
+  const failedProviders: string[] = [];
+  const onFailover = (e: { provider: string; error: string }) => {
+    failedProviders.push(e.provider);
+    timings.failover = [...failedProviders];
+    deps.onFailover?.(e);
+  };
+  let info: Omit<CompleteInfo, "answer" | "provider" | "ms" | "error" | "question" | "timings"> = { refused: false, topCosine: null, topBm25: 0 };
   let answer = "";
   let provider: string | undefined;
   let error = false;
   try {
     const ctx = await prepareContext(question, deps.index, deps.embedder);
+    timings.index = (timings.index ?? 0) + (ctx.indexMs ?? 0);
+    if (ctx.retrieval?.timings) {
+      timings.embed = ctx.retrieval.timings.embedMs;
+      timings.retrieve = ctx.retrieval.timings.retrieveMs;
+      timings.embedSource = ctx.retrieval.timings.embedSource;
+    }
     info = {
       refused: ctx.refused,
       reason: ctx.reason,
@@ -101,6 +119,7 @@ export async function* runChat(history: ChatTurn[], question: string, deps: Chat
 
     // Refused questions never reach the LLM.
     if (ctx.refused) {
+      timings.ttft = performance.now() - p0; // a canned decline is the first (and only) token
       yield { type: "token", text: refusalMessage(ctx.reason!, config.site.contactUrl, config.site.subjectName, pronouns) };
       yield { type: "done", sources: [], refused: true, reason: ctx.reason };
       return;
@@ -121,10 +140,12 @@ export async function* runChat(history: ChatTurn[], question: string, deps: Chat
           temperature: config.llm.temperature,
           signal: upstream.signal,
         },
-        deps.onFailover,
+        onFailover,
       );
       for await (const { text, provider: p } of stream) {
         provider = p;
+        if (timings.ttft === undefined) timings.ttft = performance.now() - p0;
+        timings.provider = p;
         if (CODE_FENCE.test(answer + text)) {
           // Output guard: stop the model, drop what was streamed, show the decline instead.
           upstream.abort();
@@ -146,7 +167,8 @@ export async function* runChat(history: ChatTurn[], question: string, deps: Chat
     }
   } finally {
     try {
-      deps.onComplete?.({ question, ...info, answer, provider, ms: Date.now() - t0, error });
+      timings.total = performance.now() - p0;
+      deps.onComplete?.({ question, ...info, answer, provider, ms: Date.now() - t0, error, timings });
     } catch {
       /* logging must never affect the response */
     }

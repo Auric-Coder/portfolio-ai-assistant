@@ -5,6 +5,7 @@
  */
 import { BM25 } from "./bm25";
 import type { EmbeddingProvider } from "./embeddings";
+import { normalizeQuery } from "./query";
 import type { AssistantIndex, IndexChunk } from "./types";
 
 export function cosine(a: number[], b: number[]): number {
@@ -59,6 +60,8 @@ export interface RetrievalOptions {
   denseK: number;
   topK: number;
   rrfK: number;
+  /** Give up on the query-embedding call after this many ms and fall back to BM25 only (0 = no limit). */
+  embedTimeoutMs?: number;
 }
 
 export interface RetrievalResult {
@@ -68,7 +71,34 @@ export interface RetrievalResult {
   topCosine: number | null;
   topBm25: number;
   note?: string;
+  /** Where the time went (see timing.ts). */
+  timings?: { embedMs: number; retrieveMs: number; embedSource: "api" | "starter-cache" | "none" | "timeout" | "error" };
 }
+
+/** One BM25 index per loaded knowledge index (per server instance), not one per request. */
+const bm25Cache = new WeakMap<AssistantIndex, BM25>();
+/** Test hook: how many BM25 indexes were built. */
+export const retrievalStats = { bm25Builds: 0 };
+
+function bm25For(index: AssistantIndex): BM25 {
+  let b = bm25Cache.get(index);
+  if (!b) {
+    b = new BM25(index.chunks.map((c) => c.text));
+    bm25Cache.set(index, b);
+    retrievalStats.bm25Builds++;
+  }
+  return b;
+}
+
+class EmbedTimeout extends Error {}
+
+interface EmbedOutcome {
+  vector: number[] | null;
+  ms: number;
+  source: "api" | "starter-cache" | "none" | "timeout" | "error";
+}
+
+const now = () => performance.now();
 
 export class Retriever {
   private bm25: BM25;
@@ -77,28 +107,53 @@ export class Retriever {
     private embedder: EmbeddingProvider | null,
     private opts: RetrievalOptions,
   ) {
-    this.bm25 = new BM25(index.chunks.map((c) => c.text));
+    this.bm25 = bm25For(index);
+  }
+
+  /** The query vector: from the precomputed starter-question cache, else the API with a timeout. */
+  private embedQuery(question: string, usable: boolean): Promise<EmbedOutcome> {
+    if (!usable || !this.embedder) return Promise.resolve({ vector: null, ms: 0, source: "none" });
+    const key = normalizeQuery(question);
+    const cached = this.index.queryEmbeddings?.find((q) => normalizeQuery(q.text) === key);
+    if (cached) return Promise.resolve({ vector: cached.embedding, ms: 0, source: "starter-cache" });
+
+    const t0 = now();
+    const call = this.embedder.embed([question], "query").then((r) => r[0]);
+    call.catch(() => {}); // a late failure after the timeout must not become an unhandled rejection
+    const limit = this.opts.embedTimeoutMs;
+    if (!limit) return call.then((vector) => ({ vector, ms: now() - t0, source: "api" as const }), () => ({ vector: null, ms: now() - t0, source: "error" as const }));
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new EmbedTimeout()), limit);
+    });
+    return Promise.race([call, timeout])
+      .then((vector) => ({ vector, ms: now() - t0, source: "api" as const }))
+      .catch((e) => ({ vector: null, ms: now() - t0, source: e instanceof EmbedTimeout ? ("timeout" as const) : ("error" as const) }))
+      .finally(() => clearTimeout(timer));
   }
 
   async retrieve(question: string): Promise<RetrievalResult> {
     const { index, opts } = this;
-    const bmHits = this.bm25.search(question, opts.bm25K);
-    const bmScore = new Map(bmHits.map((h) => [h.index, h.score]));
-
-    let dense: RankedItem[] = [];
-    let note: string | undefined;
     const denseUsable = !!this.embedder && !!index.embeddingModel && index.embeddingModel === this.embedder.model;
+    let note: string | undefined;
     if (!this.embedder) note = "no embedding provider: BM25 only";
     else if (!index.embeddingModel) note = "index has no vectors: BM25 only";
     else if (!denseUsable) note = `embedding model mismatch (index ${index.embeddingModel}, query ${this.embedder.model}): BM25 only`;
-    if (denseUsable) {
-      try {
-        const [qv] = await this.embedder!.embed([question], "query");
-        dense = denseSearch(qv, index.chunks, opts.denseK);
-      } catch {
-        note = "embedding call failed: BM25 only";
-      }
-    }
+
+    // Start the embedding call first, then run BM25 while it is in flight.
+    const embedding = this.embedQuery(question, denseUsable);
+    const t0 = now();
+    const bmHits = this.bm25.search(question, opts.bm25K);
+    const bmScore = new Map(bmHits.map((h) => [h.index, h.score]));
+    const bmMs = now() - t0;
+
+    const emb = await embedding;
+    const t1 = now();
+    let dense: RankedItem[] = [];
+    if (emb.vector) dense = denseSearch(emb.vector, index.chunks, opts.denseK);
+    else if (emb.source === "timeout") note = `embedding timed out after ${opts.embedTimeoutMs} ms: BM25 only`;
+    else if (emb.source === "error") note = "embedding call failed: BM25 only";
     const cosScore = new Map(dense.map((h) => [h.index, h.score]));
     const fused = rrf(dense.length ? [bmHits, dense] : [bmHits], opts.rrfK).slice(0, opts.topK);
     const hits: Hit[] = fused.map((f) => ({
@@ -113,6 +168,7 @@ export class Retriever {
       topCosine: dense.length ? dense[0].score : null,
       topBm25: bmHits[0]?.score ?? 0,
       note,
+      timings: { embedMs: emb.ms, retrieveMs: bmMs + (now() - t1), embedSource: emb.source },
     };
   }
 }

@@ -23,6 +23,8 @@ export interface AssistantIndex {
   embeddingModel: string | null;
   dimensions: number | null;
   chunks: IndexChunk[];
+  /** Precomputed query embeddings for the starter questions (same model as the chunks), so the chips need no embedding call. */
+  queryEmbeddings?: { text: string; embedding: number[] }[];
 }
 
 export interface SourceChunk {

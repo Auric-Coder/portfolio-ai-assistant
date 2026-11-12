@@ -4,6 +4,8 @@ import { loadBundledIndex } from "../../../lib/assistant/bundledIndex";
 import { handleChat, jsonError } from "../../../lib/assistant/http";
 import { buildProviderChain, type LLMProvider } from "../../../lib/assistant/llm";
 import { anonymise, createLogSink, isUnanswered } from "../../../lib/assistant/log";
+import type { Timings } from "../../../lib/assistant/timing";
+import { missingEnvNote } from "../../../lib/assistant/envcheck";
 import { createRateLimiter, limitedResponse, visitorKey } from "../../../lib/assistant/ratelimit";
 
 /**
@@ -16,6 +18,11 @@ function selectProviders(chain: LLMProvider[], only: string | undefined): LLMPro
   return names.map((n) => chain.find((p) => p.name === n)).filter((p): p is LLMProvider => !!p);
 }
 
+const round1 = (n: number | undefined) => (typeof n === "number" ? Math.round(n * 10) / 10 : undefined);
+function roundTimings(t: Timings) {
+  return { index: round1(t.index), embed: round1(t.embed), retrieve: round1(t.retrieve), ttft: round1(t.ttft), total: round1(t.total) };
+}
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -25,14 +32,22 @@ const upstash = {
 };
 // Module-level so the in-memory fallback keeps its counters between requests on one instance.
 const limiter = createRateLimiter(upstash, config.limits, undefined, () => console.warn("[assistant] rate-limit store unavailable; using the in-memory limiter"));
+// One startup note per server instance: which keys are absent (names and effects only, never values).
+const envNote = missingEnvNote(process.env);
+if (envNote) console.warn(envNote);
+
 const logSink = createLogSink({ ...upstash, file: process.env.ASSISTANT_LOG_FILE?.trim() || undefined });
 
 export async function POST(req: Request): Promise<Response> {
   try {
+    const tIndex = performance.now();
+    const index = loadBundledIndex(); // a bundled module: parsed once per instance, not per request
+    const indexLoadMs = performance.now() - tIndex;
     return await handleChat(
       req,
       {
-        index: loadBundledIndex(),
+        index,
+        timings: { index: indexLoadMs },
         embedder: createEmbeddingProvider(config.embedding),
         providers: selectProviders(
           buildProviderChain({
@@ -42,6 +57,7 @@ export async function POST(req: Request): Promise<Response> {
             geminiKey: process.env.GEMINI_API_KEY?.trim() || undefined,
             geminiModel: config.llm.geminiModel,
             timeoutMs: config.llm.timeoutMs,
+            nvidiaTimeoutMs: config.llm.nvidiaTimeoutMs,
           }),
           process.env.ASSISTANT_PROVIDERS,
         ),
@@ -60,6 +76,10 @@ export async function POST(req: Request): Promise<Response> {
             provider: r.provider,
             ms: r.ms,
             error: r.error || undefined,
+            timings: roundTimings(r.timings),
+            embedSource: r.timings.embedSource,
+            failover: r.timings.failover?.length ? r.timings.failover : undefined,
+            cold: r.timings.cold || undefined,
           });
         },
       },

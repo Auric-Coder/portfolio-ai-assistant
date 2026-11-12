@@ -4,6 +4,7 @@
  */
 import type { AssistantIndex, IndexChunk } from "./types";
 import type { EmbeddingProvider } from "./embeddings";
+import { normalizeQuery } from "./query";
 
 export type NewChunk = Omit<IndexChunk, "embedding">;
 
@@ -67,6 +68,7 @@ export async function assembleIndex(
   provider: EmbeddingProvider | null,
   schemaVersion: number,
   previous: AssistantIndex | null,
+  starters: string[] = [],
 ): Promise<{ index: AssistantIndex; embeddingCalls: number; embedded: number }> {
   const vectors = new Map<string, number[]>();
   let embeddingCalls = 0;
@@ -90,5 +92,21 @@ export async function assembleIndex(
   const keepPrev = !plan.fullRebuild && previous?.embeddingModel;
   const embeddingModel = hasVectors ? (provider?.model ?? (keepPrev ? previous!.embeddingModel : null)) : null;
   const dimensions = hasVectors ? (provider?.dimensions ?? (keepPrev ? previous!.dimensions : null)) : null;
-  return { index: { schemaVersion, embeddingModel, dimensions, chunks }, embeddingCalls, embedded: vectors.size };
+  // Query embeddings for the starter questions, so the chips need no embedding call at request time.
+  // Reused from the previous index when the text and the embedding model are unchanged.
+  let queryEmbeddings: { text: string; embedding: number[] }[] = [];
+  const wanted = [...new Map(starters.map((q) => [normalizeQuery(q), q])).values()];
+  if (wanted.length && hasVectors) {
+    const prevOk = !plan.fullRebuild && previous?.embeddingModel === embeddingModel ? (previous?.queryEmbeddings ?? []) : [];
+    const have = new Map(prevOk.map((q) => [normalizeQuery(q.text), q]));
+    const missing = wanted.filter((q) => !have.has(normalizeQuery(q)));
+    if (missing.length && provider) {
+      const res = await provider.embed(missing, "query");
+      embeddingCalls += 1;
+      missing.forEach((q, i) => have.set(normalizeQuery(q), { text: q, embedding: round(res[i]) }));
+    }
+    queryEmbeddings = wanted.map((q) => have.get(normalizeQuery(q))).filter((q): q is { text: string; embedding: number[] } => !!q);
+  }
+  const index: AssistantIndex = { schemaVersion, embeddingModel, dimensions, chunks, ...(queryEmbeddings.length ? { queryEmbeddings } : {}) };
+  return { index, embeddingCalls, embedded: vectors.size };
 }

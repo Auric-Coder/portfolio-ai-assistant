@@ -65,7 +65,7 @@ export async function buildIndex(opts: {
   const fresh = publicFiles.flatMap(chunksForFile);
   const previous = opts.rebuild ? null : readPreviousIndex(outPath);
   const plan = planUpdate(previous, fresh, opts.provider, config.indexSchemaVersion);
-  const { index, embeddingCalls, embedded } = await assembleIndex(plan, fresh, opts.provider, config.indexSchemaVersion, previous);
+  const { index, embeddingCalls, embedded } = await assembleIndex(plan, fresh, opts.provider, config.indexSchemaVersion, previous, config.site.starterQuestions);
   const json = JSON.stringify(index);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   const existing = fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf8") : null;

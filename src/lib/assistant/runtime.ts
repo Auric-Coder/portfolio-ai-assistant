@@ -7,6 +7,7 @@ import path from "node:path";
 import { config } from "./config";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embeddings";
 import { passesRelevanceGate, preFilter, type RefusalReason } from "./guardrails";
+import { isIdentityQuestion } from "./identity";
 import { Retriever, type RetrievalResult } from "./retrieval";
 import type { AssistantIndex } from "./types";
 
@@ -26,6 +27,8 @@ export interface AnswerContext {
   refused: boolean;
   reason?: RefusalReason;
   retrieval?: RetrievalResult;
+  /** Milliseconds spent getting the retriever ready (cached per instance, so ~0 when warm). */
+  indexMs?: number;
 }
 
 /** Everything before the LLM: pre-filter, retrieval, relevance gate. */
@@ -36,8 +39,12 @@ export async function prepareContext(
 ): Promise<AnswerContext> {
   const guard = preFilter(question);
   if (guard.blocked) return { refused: true, reason: guard.reason };
+  const t0 = performance.now();
   const retriever = new Retriever(index, embedder, config.retrieval);
+  const indexMs = performance.now() - t0;
   const retrieval = await retriever.retrieve(question);
-  if (!passesRelevanceGate(retrieval, config.gate)) return { refused: true, reason: "irrelevant", retrieval };
-  return { refused: false, retrieval };
+  // Questions about the assistant itself ("Who are you?") never match the knowledge base; they go to the model.
+  const identity = isIdentityQuestion(question, config.site.assistantName, config.site.subjectName);
+  if (!identity && !passesRelevanceGate(retrieval, config.gate)) return { refused: true, reason: "irrelevant", retrieval, indexMs };
+  return { refused: false, retrieval, indexMs };
 }

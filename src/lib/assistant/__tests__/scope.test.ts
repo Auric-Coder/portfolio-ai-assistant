@@ -47,10 +47,25 @@ test("a short reminder follows the retrieved context, right before the visitor q
   assert.ok(buildReminder(site).length < buildSystemPrompt(site).length / 3, "the reminder stays short");
 });
 
+test("identity: Nova says she is an AI only when asked, and never opens an answer with a self-introduction", () => {
+  const p = buildSystemPrompt(site);
+  assert.ok(!/always identify yourself/i.test(p), "the always-identify rule is gone");
+  assert.ok(p.includes("Say that you are an AI only when someone asks who or what you are, whether you are a person, a bot or an AI, who made you or how you work"));
+  assert.ok(p.includes("in the first person"));
+  assert.ok(p.includes(`"I'm ${site.assistantName}, an AI assistant ${site.subjectName} built to answer questions about ${P.possessive} work"`));
+  assert.ok(p.includes(`Never start an answer with "I am ${site.assistantName}" or "I'm ${site.assistantName}, an AI assistant"`));
+  assert.ok(p.includes("The only exception: when someone asks who you are, who made you or how you work, you may say where your answers come from."), "the one allowed identity exception");
+  assert.ok(p.includes("the page already labels you as an AI assistant"));
+  assert.ok(!buildReminder(site).includes("I am "), "the reminder adds no introduction either");
+});
+
 test("the style rule forbids meta-phrases and the system prompt itself avoids 'notes' for facts", () => {
   const p = buildSystemPrompt(site);
   assert.ok(p.includes("Never mention sources, documents, notes") && p.includes("according to"));
-  assert.ok(!/portfolio notes|knowledge base/i.test(p.replace(/Never mention[^.]*\./, "")), "no wording that teaches the model to say 'notes'");
+  const body = p.replace(/Never mention[^.]*\./, "");
+  assert.ok(!/knowledge base/i.test(body));
+  // the prompt is frozen: the phrase must not appear at all (nova.md supplies the self-description)
+  assert.equal((body.match(/portfolio notes/gi) ?? []).length, 0, "no wording that teaches the model to say 'notes'");
 });
 
 test("context blocks carry no file names or numbering the model could quote", () => {

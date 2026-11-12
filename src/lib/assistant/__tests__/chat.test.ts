@@ -249,3 +249,23 @@ test("an over-long question is refused by the guardrail without an LLM call", as
   assert.ok(text.includes('"refused":true'));
   assert.equal(d.providers[0].calls(), 0);
 });
+
+test("NVIDIA has its own, shorter failover timeout (default 8 s); Gemini keeps the shared one", async () => {
+  const { config } = await import("../config");
+  assert.equal(config.llm.nvidiaTimeoutMs, 8000, "the primary fails over to Gemini after 8 s without a first token");
+  assert.equal(config.llm.timeoutMs, 15000, "the shared timeout is unchanged");
+  // NVIDIA stalls after the headers (no first token): with a 60 ms NVIDIA timeout and a 5 s shared one the chain must still reach Gemini quickly.
+  const fetchImpl = (async (url: string) => {
+    if (url.includes("nvidia")) {
+      const stall = new ReadableStream({ start() {} });
+      return new Response(stall, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    return sseResponse([gemLine("from gemini")]);
+  }) as unknown as typeof fetch;
+  const failed: string[] = [];
+  const t0 = Date.now();
+  const r = await collect(streamWithFailover(buildProviderChain({ ...env, timeoutMs: 5000, nvidiaTimeoutMs: 60 }, fetchImpl), req, (e) => failed.push(e.provider)));
+  assert.equal(r.provider, "gemini");
+  assert.deepEqual(failed, ["nvidia"]);
+  assert.ok(Date.now() - t0 < 2000, `failed over after the NVIDIA timeout, not the shared one (${Date.now() - t0} ms)`);
+});

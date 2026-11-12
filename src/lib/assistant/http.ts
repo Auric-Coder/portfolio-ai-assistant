@@ -9,6 +9,10 @@
  */
 import { config } from "./config";
 import { parseMessages, runChat, type ChatDeps, type ChatEvent } from "./chat";
+import { serverTimingHeader, type Timings } from "./timing";
+
+/** Requests this server instance has handled (the first one is a cold start). */
+let instanceRequests = 0;
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 
@@ -53,13 +57,33 @@ export async function handleChat(req: Request, deps: ChatDeps, preflight?: (req:
   const parsed = parseMessages(body);
   if (!parsed.ok) return jsonError(400, parsed.error);
 
-  const gen = runChat(parsed.history, parsed.question, deps);
+  const timings: Timings = deps.timings ?? {};
+  timings.cold = instanceRequests++ === 0;
+  const gen = runChat(parsed.history, parsed.question, { ...deps, timings });
+
+  // Run the pipeline up to the first event before answering, so the Server-Timing header can carry the
+  // index/embed/retrieve/ttft timings and the provider actually used (headers cannot change once the
+  // body has started). The client sees the same stream, just with headers that explain the latency.
+  let pending: IteratorResult<ChatEvent, void> | undefined;
+  let startFailed = false;
+  try {
+    pending = await gen.next();
+  } catch {
+    startFailed = true;
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { value, done } = await gen.next();
-        if (done) return controller.close();
-        controller.enqueue(sse(value));
+        if (startFailed) {
+          startFailed = false;
+          controller.enqueue(sse({ type: "error", message: "The assistant is unavailable right now." }));
+          return controller.close();
+        }
+        const r = pending ?? (await gen.next());
+        pending = undefined;
+        if (r.done) return controller.close();
+        controller.enqueue(sse(r.value));
       } catch {
         controller.enqueue(sse({ type: "error", message: "The assistant is unavailable right now." }));
         controller.close();
@@ -69,11 +93,12 @@ export async function handleChat(req: Request, deps: ChatDeps, preflight?: (req:
       await gen.return(undefined);
     },
   });
-  return new Response(stream, {
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-store, no-transform",
-      "x-accel-buffering": "no",
-    },
-  });
+  const headers: Record<string, string> = {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store, no-transform",
+    "x-accel-buffering": "no",
+  };
+  const serverTiming = serverTimingHeader(timings);
+  if (serverTiming) headers["server-timing"] = serverTiming;
+  return new Response(stream, { headers });
 }

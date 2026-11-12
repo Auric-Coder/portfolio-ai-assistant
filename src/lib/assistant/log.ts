@@ -22,6 +22,14 @@ export interface LogEntry {
   provider?: string;
   ms: number;
   error?: boolean;
+  /** Milliseconds: index, embed, retrieve, ttft, total (see timing.ts). */
+  timings?: { index?: number; embed?: number; retrieve?: number; ttft?: number; total?: number };
+  /** "api" | "starter-cache" | "none" | "timeout" | "error" */
+  embedSource?: string;
+  /** Providers that failed before the answer started (failover happened when present). */
+  failover?: string[];
+  /** First request of this server instance. */
+  cold?: boolean;
 }
 
 /** Remove things that could identify a person from free text, then cut it to 200 chars. */

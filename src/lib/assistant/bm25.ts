@@ -19,6 +19,18 @@ function normalise(text: string): string {
     .replace(/[’']s\b/g, "");
 }
 
+/**
+ * Word forms the plural-only stemmer cannot join. Applied to documents and queries alike, so
+ * "Where has he interned?" matches "internship" and "Has he worked anywhere?" matches "work".
+ */
+const ALIASES: Record<string, string> = {
+  internship: "intern",
+  interned: "intern",
+  interning: "intern",
+  worked: "work",
+  working: "work",
+};
+
 export function stem(w: string): string {
   if (w.length > 4 && w.endsWith("ies")) return w.slice(0, -3) + "y";
   if (w.length > 3 && w.endsWith("s") && !/(ss|us|is|js)$/.test(w)) return w.slice(0, -1);
@@ -30,7 +42,8 @@ export function tokenize(text: string, keepStopwords = false): string[] {
   for (const t of normalise(text).split(/[^a-z0-9]+/)) {
     if (!t) continue;
     if (!keepStopwords && STOP.has(t)) continue;
-    out.push(stem(t));
+    const s = stem(t);
+    out.push(ALIASES[s] ?? s);
   }
   return out;
 }

@@ -33,6 +33,8 @@ export const config = {
     denseK: 20,
     topK: 5,
     rrfK: 60,
+    /** Query-embedding call budget; beyond it retrieval continues with BM25 only. */
+    embedTimeoutMs: Number(env("EMBED_TIMEOUT_MS") ?? 1500),
   },
 
   llm: {
@@ -44,6 +46,9 @@ export const config = {
     maxTokens: 400,
     temperature: 0.2,
     timeoutMs: 15000,
+    // Primary provider: how long to wait for headers and for the first token before failing over to Gemini
+    // (it also bounds the gap between later chunks). Normal first token is about 1.3 s.
+    nvidiaTimeoutMs: Number(env("NVIDIA_TIMEOUT_MS") ?? 8000),
   },
 
   /**
@@ -68,11 +73,13 @@ export const config = {
   /**
    * Relevance gate thresholds, tuned in Phase 6 on eval/questions.yaml (npm run eval:retrieval):
    * answerable questions score cosine >= 0.62, off-topic ones <= 0.53, so minCosine sits in the middle
-   * of that gap. Re-run the sweep whenever the KB changes a lot.
+   * of that gap. strongCosine 0.72 -> 0.70: "Where has he interned?" matched the right FAQ at 0.718 with no
+   * keyword overlap and was refused; plain off-topic questions stay at or below 0.55, so there is room.
+   * Re-run the sweep whenever the KB changes a lot.
    */
   gate: {
     minCosine: 0.57,
-    strongCosine: 0.72,
+    strongCosine: 0.70,
     minBm25: 2.0,
     minBm25WithCosine: 1.0,
   },
